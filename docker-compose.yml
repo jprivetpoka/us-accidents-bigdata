@@ -1,0 +1,179 @@
+
+services:
+  namenode:
+    image: apache/hadoop:3.5.0
+    hostname: namenode
+    command: ["hdfs", "namenode"]
+    ports:
+      - "9870:9870"
+    volumes:
+      - namenode_data:/hadoop/dfs/name
+      - ./config/hadoop/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
+      - ./config/hadoop/hdfs-site.xml:/opt/hadoop/etc/hadoop/hdfs-site.xml:ro
+    pre_start:
+      - user: "0:0"
+        entrypoint: ["/bin/sh", "-ec"]
+        command:
+          - |
+            mkdir -p /hadoop/dfs/name
+            chown -R 1001:100 /hadoop/dfs/name
+      - user: "1001:100"
+        entrypoint: ["/bin/sh", "-ec"]
+        command:
+          - |
+            if [ -f /hadoop/dfs/name/current/VERSION ]; then
+              echo "NameNode is already formatted"
+            elif [ -z "$$(find /hadoop/dfs/name -mindepth 1 ! -name in_use.lock -print -quit)" ]; then
+              rm -f /hadoop/dfs/name/in_use.lock
+              hdfs namenode -format -nonInteractive
+            else
+              echo "ERROR: Unexpected files in NameNode storage; refusing to format" >&2
+              exit 1
+            fi
+
+  datanode-1:
+    image: apache/hadoop:3.5.0
+    hostname: datanode-1
+    command: ["hdfs", "datanode"]
+    depends_on:
+      - namenode
+    volumes:
+      - datanode1_data:/hadoop/dfs/data
+      - ./config/hadoop/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
+      - ./config/hadoop/hdfs-site.xml:/opt/hadoop/etc/hadoop/hdfs-site.xml:ro
+    pre_start:
+      - user: "0:0"
+        entrypoint: ["/bin/sh", "-ec"]
+        command:
+          - |
+            mkdir -p /hadoop/dfs/data
+            chown -R 1001:100 /hadoop/dfs/data
+
+  datanode-2:
+    image: apache/hadoop:3.5.0
+    hostname: datanode-2
+    command: ["hdfs", "datanode"]
+    depends_on:
+      - namenode
+    volumes:
+      - datanode2_data:/hadoop/dfs/data
+      - ./config/hadoop/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
+      - ./config/hadoop/hdfs-site.xml:/opt/hadoop/etc/hadoop/hdfs-site.xml:ro
+    pre_start:
+      - user: "0:0"
+        entrypoint: ["/bin/sh", "-ec"]
+        command:
+          - |
+            mkdir -p /hadoop/dfs/data
+            chown -R 1001:100 /hadoop/dfs/data
+
+  spark-master:
+    image: spark:3.5.9-java17-python3
+    hostname: spark-master
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.master.Master
+      - --host
+      - spark-master
+      - --port
+      - "7077"
+      - --webui-port
+      - "8080"
+    environment:
+      HADOOP_CONF_DIR: /opt/spark/conf/hadoop
+      HADOOP_USER_NAME: hadoop
+      SPARK_DAEMON_MEMORY: 512m
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./config/hadoop:/opt/spark/conf/hadoop:ro
+      - ./scripts:/opt/spark/work:ro
+
+  spark-worker-1:
+    image: spark:3.5.9-java17-python3
+    hostname: spark-worker-1
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.worker.Worker
+      - --cores
+      - "2"
+      - --memory
+      - 2g
+      - --webui-port
+      - "8081"
+      - --work-dir
+      - /tmp/spark-worker
+      - spark://spark-master:7077
+
+    depends_on:
+      - spark-master
+    environment:
+      HADOOP_CONF_DIR: /opt/spark/conf/hadoop
+      HADOOP_USER_NAME: hadoop
+      SPARK_DAEMON_MEMORY: 512m
+    volumes:
+      - ./config/hadoop:/opt/spark/conf/hadoop:ro
+      - ./scripts:/opt/spark/work:ro
+
+  postgres:
+    image: postgres:16-alpine
+    hostname: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: analytics
+    ports:
+      - "127.0.0.1:5435:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    configs:
+      - source: postgres_init
+        target: /docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d analytics"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  superset:
+    image: apache/superset:6.1.0-dev
+    hostname: superset
+    environment:
+      SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:?Set SUPERSET_SECRET_KEY in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:?Set SUPERSET_ADMIN_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:8088:8088"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./config/superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+    pre_start:
+      - command: ["superset", "db", "upgrade"]
+      - command:
+          - sh
+          - -ec
+          - |
+            superset fab create-admin \
+              --username admin \
+              --firstname Superset \
+              --lastname Admin \
+              --email admin@example.com \
+              --password "$$SUPERSET_ADMIN_PASSWORD"
+
+      - command: ["superset", "init"]
+    command: ["/app/docker/docker-bootstrap.sh", "app-gunicorn"]
+
+volumes:
+  namenode_data:
+  datanode1_data:
+  datanode2_data:
+  postgres_data:
+
+
+configs:
+  postgres_init:
+    content: |
+      CREATE DATABASE superset_meta;
