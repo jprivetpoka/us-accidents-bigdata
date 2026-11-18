@@ -1,0 +1,9 @@
+data/
+*.parquet
+.env
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+artifacts/
+volumes/
+.DS_Store
