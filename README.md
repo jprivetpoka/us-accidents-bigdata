@@ -1,194 +1,130 @@
-
 # US Accidents — Big Data Analytics
 
-Проект анализа дорожно-транспортных происшествий в США на основе датасета US Accidents (March 2023).
+Командный проект по анализу дорожно-транспортных происшествий в США на датасете **US Accidents (March 2023)**. Исходный CSV содержит **7 728 394 записи, 46 столбцов** и существенно превышает 0,5 ГБ. Обработка выполняется с использованием Hadoop HDFS и Apache Spark; результаты аналитики хранятся в PostgreSQL и отображаются в Apache Superset.
 
-Для хранения и обработки больших данных используется локальная инфраструктура на базе Docker Compose.
+Гугл документ по этапам работы: https://docs.google.com/document/d/1A5e0463F-eojgZygB6DZNBpyIubzJymKjEN_AdXv7Uk/edit?usp=sharing
 
-## 1. Архитектура проекта
+## 1. Архитектура и фактическое состояние проекта
 
-Проект включает семь Docker-контейнеров:
+Текущая конфигурация Docker Compose включает **7 контейнеров**:
 
 | Сервис | Назначение |
 |---|---|
-| Hadoop NameNode | Управление файловой системой HDFS |
-| Hadoop DataNode 1 | Хранение блоков данных |
-| Hadoop DataNode 2 | Хранение блоков данных |
-| Spark Master | Управление выполнением Spark-задач |
-| Spark Worker | Выполнение вычислений |
-| PostgreSQL | Хранение результатов анализа |
-| Apache Superset | Визуализация данных и создание дашбордов |
+| `namenode` | Метаданные файловой системы HDFS |
+| `datanode-1`, `datanode-2` | Хранение блоков CSV и Parquet в HDFS (репликация — 2) |
+| `spark-master` | Управление Spark-задачами |
+| `spark-worker-1` | Выполнение Spark-задач |
+| `postgres` | Базы `analytics` и `superset_meta` |
+| `superset` | Интерактивный аналитический дашборд |
 
-Основной поток обработки данных:
+**Поток данных:**
 
-**CSV → HDFS → Apache Spark → PostgreSQL → Apache Superset**
+```text
+US Accidents CSV
+    ↓
+HDFS /data/raw/
+    ↓ Spark / PySpark: очистка и дополнительные признаки
+HDFS /data/curated/accidents/ (Parquet)
+    ├──→ Spark MLlib и проверка гипотез
+    └──→ Spark / JDBC → PostgreSQL analytics → Apache Superset
+```
 
-HDFS хранит исходный датасет. Spark выполняет его обработку и анализ. Результаты записываются в PostgreSQL и используются для визуализации в Superset.
+Проект организован в четыре этапа: **архитектура → обработка данных и ML → проверка гипотез → аналитическая БД и визуализация**.
 
-## 2. Требования
+## 2. Требования и структура файлов
 
-Для запуска необходимы:
+Для работы необходимы Docker Desktop с Docker Compose, Git и достаточно свободного места для исходного CSV, HDFS и Parquet. Для работы с исследовательским ноутбуком требуется среда Jupyter/PySpark с доступом к Spark и HDFS.
 
-- Docker Desktop с поддержкой Docker Compose
-- Git
+```text
+us-accidents-bigdata/
+├── config/
+│   ├── hadoop/
+│   ├── spark/
+│   └── superset/
+├── data/                             # Локальные большие данные; не передаются через Git
+├── docs/                             # Скрины и модель архитектуры
+├── exports/
+│   ├── analytics.sql                # Агрегаты PostgreSQL, без исходного CSV
+│   └── superset_dashboard_safe.zip  # Экспорт Superset без пароля в SQLAlchemy URI
+├── scripts/
+│   ├── analytics/
+│   │   ├── build_state_analytics.py
+│   │   ├── build_weather_analytics.py
+│   │   └── build_time_analytics.py
+│   ├── exploration/
+│   │   ├── data_exploration.ipynb
+│   │   └── inspect_raw.py
+│   ├── preprocessing/
+│   │   └── clean_accidents.py
+│   ├── tests/
+│   │   ├── test_spark_hdfs.py
+│   │   └── test_spark_postgres.py
+│   └── validation/
+│       └── check_curated.py
+├── sql/
+├── .env.example
+├── docker-compose.yml
+└── README.md
+```
 
-Все компоненты запускаются локально. Отдельный облачный сервер не требуется.
+Большие файлы `data/`, настоящие пароли в `.env` и оригинальный экспорт Superset с паролем не следует добавлять в Git. Перед публикацией `exports/` необходимо дополнительно проверить SQL и ZIP на секреты.
 
-## 3. Первый запуск
+## 3. Первый запуск инфраструктуры
 
-### 3.1. Скачивание проекта
-
-Клонируйте репозиторий и перейдите в папку проекта:
+### 3.1. Скачивание и переменные окружения
 
 ```bash
 git clone https://github.com/jprivetpoka/us-accidents-bigdata.git
 cd us-accidents-bigdata
-```
-
-### 3.2. Настройка переменных окружения
-
-Создайте файл `.env` на основе шаблона:
-
-```bash
 cp .env.example .env
 ```
 
-Откройте `.env` и заполните переменные:
+Заполните `.env`:
 
-- `POSTGRES_PASSWORD` — задайте пароль PostgreSQL.
-- `SUPERSET_SECRET_KEY` — сгенерируйте секретный ключ Superset.
-- `SUPERSET_ADMIN_PASSWORD` — задайте пароль администратора Superset.
+- `POSTGRES_PASSWORD` — пароль PostgreSQL;
+- `SUPERSET_SECRET_KEY` — секретный ключ Superset;
+- `SUPERSET_ADMIN_PASSWORD` — пароль администратора Superset.
 
-Для генерации секретного ключа можно использовать:
+Генерация ключа Superset:
 
 ```bash
 openssl rand -hex 32
 ```
 
-Скопируйте полученное значение в `SUPERSET_SECRET_KEY`.
+Не публикуйте `.env` и значения секретов.
 
-Не добавляйте настоящий `.env` с паролями в Git.
-
-### 3.3. Запуск инфраструктуры
-
-В корневой папке проекта выполните:
+### 3.2. Запуск контейнеров
 
 ```bash
 docker compose up -d
-```
-
-Docker Compose создаст и запустит семь контейнеров.
-
-Проверьте состояние сервисов:
-
-```bash
 docker compose ps
 ```
 
-При первом запуске PostgreSQL инициализирует базы данных `analytics` и `superset_meta` в новом Docker volume.
+В текущей конфигурации PostgreSQL при первом запуске должен содержать базы `analytics` и `superset_meta`. Убедитесь в их наличии до восстановления аналитики.
 
-Superset использует `superset_meta` для хранения своих настроек и пользователей.
+### 3.3. Адреса сервисов
 
-## 4. Веб-интерфейсы
-
-После запуска доступны:
-
-| Компонент | Адрес |
+| Сервис | Адрес / параметры |
 |---|---|
-| Hadoop NameNode | http://localhost:9870 |
-| Spark Master | http://localhost:8082 |
-| Apache Superset | http://localhost:8088 |
+| HDFS NameNode | <http://localhost:9870> |
+| Spark Master | <http://localhost:8082> |
+| Apache Superset | <http://localhost:8088> |
+| PostgreSQL из контейнеров | `postgres:5432` |
+| PostgreSQL с компьютера | `localhost:5435` (согласно текущему README; проверить в Compose при изменении портов) |
 
-Для входа в Superset используется пользователь `admin` и пароль из `SUPERSET_ADMIN_PASSWORD`.
+В Superset входите как `admin` с паролем `SUPERSET_ADMIN_PASSWORD` из `.env`.
 
-Локальное подключение к PostgreSQL:
+## 4. Исходные данные в HDFS
 
-- Host внутри Docker: `postgres`
-- Port внутри Docker: `5432`
-- Port на компьютере: `5435`
-- Database: `analytics`
-- User: `postgres`
+Скачать `US_Accidents_March23.csv` можно на [Kaggle](https://www.kaggle.com/datasets/sobhanmoosavi/us-accidents/data). Поместите файл в локальный каталог `data/` проекта.
 
-## 5. Управление контейнерами
-
-Остановить контейнеры без удаления данных:
+Создайте каталоги в HDFS:
 
 ```bash
-docker compose down
+docker compose exec namenode hdfs dfs -mkdir -p /data/raw /data/curated
 ```
 
-Повторно запустить:
-
-```bash
-docker compose up -d
-```
-
-Посмотреть состояние:
-
-```bash
-docker compose ps
-```
-
-Посмотреть логи конкретного сервиса:
-
-```bash
-docker compose logs --tail=100 spark-master
-```
-
-Данные HDFS и PostgreSQL сохраняются в Docker volumes при обычной остановке.
-
-**Внимание:** команда `docker compose down -v` удаляет Docker volumes и может привести к потере данных.
-
-## 6. Хранение данных в HDFS
-
-Для хранения исходных и обработанных данных используется распределённая файловая система Hadoop HDFS.
-
-В проекте предусмотрена следующая структура:
-
-```text
-/data/
-├── raw/
-│   └── US_Accidents_March23.csv
-└── curated/
-    └── accidents/  (будущие обработанные данные в Parquet)
-```
-На схеме представлены каталоги файловой системы HDFS, а не локальной папки проекта data/. Физически данные HDFS хранятся в Docker volumes на компьютере.
-- **`/data/raw/`** — исходные данные без изменений.
-- **`/data/curated/`** — очищенные и подготовленные данные после обработки в Apache Spark.
-
-Исходный датасет `US_Accidents_March23.csv` содержит 7 728 394 записи и 46 столбцов.
-
-### 6.1. Подготовка каталогов HDFS
-
-После запуска Docker Compose создайте каталоги:
-
-```bash
-docker compose exec namenode \
-  hdfs dfs -mkdir -p /data/raw /data/curated
-```
-
-Команда создаёт оба каталога, если они ещё не существуют. При повторном выполнении существующие каталоги сохраняются.
-
-Проверьте структуру:
-
-```bash
-docker compose exec namenode hdfs dfs -ls /data
-```
-
-Ожидается наличие каталогов `raw` и `curated`.
-
-### 6.2. Загрузка исходного CSV
-
-Ссылка на датасет: https://www.kaggle.com/datasets/sobhanmoosavi/us-accidents/data
-Поместите файл `US_Accidents_March23.csv` в папку `data/` в корне проекта:
-
-```text
-us-accidents-bigdata/
-└── data/
-    └── US_Accidents_March23.csv
-```
-
-Затем загрузите файл в HDFS:
+Загрузите CSV (если он ещё не загружен):
 
 ```bash
 docker compose exec -T namenode \
@@ -196,47 +132,20 @@ docker compose exec -T namenode \
   < data/US_Accidents_March23.csv
 ```
 
-Команда передаёт файл из локальной папки проекта в HDFS.
-
-Если CSV уже находится в `/data/raw/`, повторная загрузка не требуется.
-
-### 6.3. Проверка исходных данных
-
-Посмотрите содержимое каталога:
+Проверка:
 
 ```bash
-docker compose exec namenode \
-  hdfs dfs -ls -h /data/raw
+docker compose exec namenode hdfs dfs -ls -h /data/raw
+docker compose exec namenode hdfs fsck /data/raw/US_Accidents_March23.csv
 ```
 
-Проверьте целостность CSV:
+Ожидается статус `HEALTHY`. Повторно загружать уже существующий файл не нужно.
 
-```bash
-docker compose exec namenode \
-  hdfs fsck /data/raw/US_Accidents_March23.csv
-```
+## 5. Spark: исследование, очистка и Parquet
 
-Ожидаемый статус: `HEALTHY`.
+Папка `scripts/` целиком подключается в Spark-контейнер как `/opt/spark/work/`; вложенные папки также доступны.
 
-### 6.4. Хранение обработанных данных
-
-После очистки и преобразования исходного CSV с помощью Apache Spark результаты будут сохраняться в каталоге `/data/curated/`.
-
-Планируемый формат хранения — **Apache Parquet**, который удобен для аналитической обработки больших данных.
-
-Например, результаты очистки могут размещаться по пути:
-
-```text
-hdfs://namenode:8020/data/curated/accidents/
-```
-
-Каталог `accidents/` будет создан при первой записи обработанных данных Spark. На текущем этапе основной очищенный датасет ещё не сформирован.
-
-## 7. Работа с Apache Spark
-
-PySpark-скрипты находятся в папке `scripts/`, которая подключается к контейнеру Spark Master.
-
-### 7.1. Проверка чтения CSV
+### 5.1. Проверка чтения исходного CSV
 
 ```bash
 docker compose exec spark-master \
@@ -247,18 +156,26 @@ docker compose exec spark-master \
   --conf spark.driver.bindAddress=0.0.0.0 \
   --conf spark.executor.memory=1g \
   --conf spark.cores.max=2 \
-  /opt/spark/work/inspect_raw.py
+  /opt/spark/work/exploration/inspect_raw.py
 ```
 
-Скрипт проверяет доступность исходного датасета через Spark.
+Ожидаются **7 728 394 строк и 46 исходных столбцов**.
 
-Ожидаемые характеристики:
-- Записи: 7 728 394
-- Столбцы: 46
+### 5.2. Исследование и подготовка Parquet
 
-### 7.2. Проверка PostgreSQL
+- Исследовательский ноутбук: `scripts/exploration/data_exploration.ipynb`.
+- Скрипт предварительной обработки: `scripts/preprocessing/clean_accidents.py`.
+- Итоговые очищенные данные: `hdfs://namenode:8020/data/curated/accidents/`.
 
-Для проверки подключения Spark к PostgreSQL:
+Ноутбук содержит чтение исходного CSV из HDFS и запись очищенного датасета в Parquet с партиционированием по году. **На уже подготовленном окружении** обработанный датасет содержит **7 728 394 строки и 51 столбец**. Если каталог в HDFS отсутствует, необходимо сначала выполнить этап подготовки данных в рабочей среде PySpark с доступом к HDFS. Сам факт наличия ноутбука в Git не создаёт Parquet автоматически; команды универсального запуска ноутбука в текущем Compose нет.
+
+Проверка наличия Parquet:
+
+```bash
+docker compose exec namenode hdfs dfs -ls /data/curated/accidents
+```
+
+Затем проверка схемы и объёма в Spark:
 
 ```bash
 docker compose exec spark-master \
@@ -269,97 +186,191 @@ docker compose exec spark-master \
   --conf spark.driver.bindAddress=0.0.0.0 \
   --conf spark.executor.memory=1g \
   --conf spark.cores.max=2 \
-  /opt/spark/work/test_spark_postgres.py
+  /opt/spark/work/validation/check_curated.py
 ```
 
-Ожидается значение `connection_ok = 1`.
+Ожидается 7 728 394 записи, 51 столбец и наличие необходимых аналитических признаков (`year`, `hour`, `State`, `Weather_Condition`, `Severity`, `is_weekend`, `Sunrise_Sunset`).
 
-JDBC-драйвер PostgreSQL подключается автоматически через `config/spark/spark-defaults.conf`.
+## 6. Обработка данных, ML и гипотезы
 
-## 8. Резервное копирование PostgreSQL
+Исследование, расчёты ML и статистические проверки выполнены командой с использованием PySpark. Для демонстрации в Superset их **итоговые результаты** записаны в PostgreSQL (`ml_metrics`, `hypothesis_results`). Экспорт `analytics.sql` содержит эти результирующие таблицы, **но не заменяет код обучения модели и статистических тестов**.
 
-Для передачи результатов анализа между участниками используется резервная копия базы `analytics`.
+В текущей таблице `hypothesis_results` отражены три проверки:
 
-База `superset_meta` хранит настройки Superset и не включается в эту резервную копию.
+1. Различие распределения ДТП по часам в будни и выходные: χ² = 267277,52; p < 0,001; V Крамера = 0,186.
+2. Связь видимости с тяжестью ДТП (Severity 3–4): p = 0,002; V Крамера = 0,0012 (крайне слабая связь).
+3. Связь погодных условий с тяжестью ДТП: χ² = 346498,71; p < 0,001; V Крамера = 0,1236.
 
-### 8.1. Создание резервной копии
+ML-результаты относятся к модели Random Forest: accuracy 0,7832; macro-F1 0,6135; ROC-AUC 0,7007; precision (класс 1) 0,4030; recall (класс 1) 0,3211; порог классификации 0,225. Для воспроизводимости обучения и проверки метрик нужен исходный ML-код команды; в описанных здесь скриптах аналитической выгрузки он отсутствует.
 
-Выполните:
+**Отличия от первоначального технического плана:** вместо заранее предложенной проверки «день/ночь и тяжесть ДТП» в текущих результатах содержится проверка «видимость и тяжесть ДТП». Исходный план также предполагал многоклассовую ML-классификацию Severity (1–4), а представленные метрики для `class 1` и порог 0,225 требуют уточнения фактической постановки задачи перед итоговой сдачей. Не следует объявлять эти пункты выполненными без подтверждения участников.
+
+## 7. Аналитические таблицы PostgreSQL
+
+Далее предусмотрены **два альтернативных пути**. Для быстрого развёртывания готового дашборда рекомендуется **7.1**; для пересчёта статистики из Parquet — **7.2**. Не нужно выполнять оба пути подряд.
+
+Перед пересчётом можно проверить JDBC-подключение Spark к PostgreSQL:
 
 ```bash
+docker compose exec spark-master \
+  /opt/spark/bin/spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --conf spark.driver.host=spark-master \
+  --conf spark.driver.bindAddress=0.0.0.0 \
+  --conf spark.executor.memory=1g \
+  --conf spark.cores.max=2 \
+  /opt/spark/work/tests/test_spark_postgres.py
+```
+
+Ожидаемый результат проверки — `connection_ok = 1`. JDBC-драйвер PostgreSQL подключается через `config/spark/spark-defaults.conf`.
+
+### 7.1. Вариант А — восстановить готовые результаты (рекомендуется)
+
+На **чистой** базе `analytics` выполните из корня проекта:
+
+```bash
+docker compose exec -T postgres \
+  psql -v ON_ERROR_STOP=1 -U postgres -d analytics \
+  < exports/analytics.sql
+```
+
+Файл `exports/analytics.sql` создан с помощью `pg_dump --schema=public --no-owner --no-privileges`: он содержит **5 таблиц с агрегатами и результатами** и **1 представление VIEW**. Это **не резервная копия исходного CSV**, других баз или всех служебных объектов PostgreSQL.
+
+**Не выполняйте импорт в уже заполненную базу:** команды `CREATE TABLE` могут конфликтовать с существующими объектами. При повторном развёртывании используйте отдельную пустую базу или заранее согласованный процесс её очистки с резервным копированием.
+
+### 7.2. Вариант Б — пересчитать статистику из Parquet
+
+Этот вариант требует готовых очищенных данных в HDFS (см. раздел 5). Запускайте команды по очереди:
+
+**По штатам:**
+
+```bash
+docker compose exec spark-master \
+  /opt/spark/bin/spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --conf spark.driver.host=spark-master \
+  --conf spark.driver.bindAddress=0.0.0.0 \
+  --conf spark.executor.memory=1g \
+  --conf spark.cores.max=2 \
+  /opt/spark/work/analytics/build_state_analytics.py
+```
+
+**По погодным условиям:**
+
+```bash
+docker compose exec spark-master \
+  /opt/spark/bin/spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --conf spark.driver.host=spark-master \
+  --conf spark.driver.bindAddress=0.0.0.0 \
+  --conf spark.executor.memory=1g \
+  --conf spark.cores.max=2 \
+  /opt/spark/work/analytics/build_weather_analytics.py
+```
+
+**По времени суток:**
+
+```bash
+docker compose exec spark-master \
+  /opt/spark/bin/spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --conf spark.driver.host=spark-master \
+  --conf spark.driver.bindAddress=0.0.0.0 \
+  --conf spark.executor.memory=1g \
+  --conf spark.cores.max=2 \
+  /opt/spark/work/analytics/build_time_analytics.py
+```
+
+JDBC-драйвер PostgreSQL подключается через `config/spark/spark-defaults.conf`. Эти три скрипта создают/перезаписывают три агрегированные таблицы, **но не восстанавливают сами по себе** `ml_metrics`, `hypothesis_results` и `accidents_hourly_comparison`. Для полного дашборда потребуются результаты остальных этапов либо восстановление полного `analytics.sql` в чистую базу.
+
+### 7.3. Проверка аналитической базы
+
+```bash
+docker compose exec -T postgres \
+  psql -U postgres -d analytics -c '\dt public.*'
+
+docker compose exec -T postgres \
+  psql -U postgres -d analytics -c '\dv public.*'
+```
+
+Ожидаются:
+
+| Объект | Назначение |
+|---|---|
+| `accidents_by_state_year` | ДТП по году и штату |
+| `accidents_by_weather_year` | ДТП и доля Severity 3–4 по погодным условиям |
+| `accidents_by_time` | ДТП по году, часу, типу дня и дню/ночи |
+| `accidents_hourly_comparison` (VIEW) | Нормированные доли ДТП по часам для будней и выходных (за весь период) |
+| `hypothesis_results` | Три статистические гипотезы |
+| `ml_metrics` | Пять метрик Random Forest |
+
+Проверка совпадения общего количества ДТП по агрегатам:
+
+```bash
+docker compose exec -T postgres \
+  psql -U postgres -d analytics -c \
+  'SELECT SUM(accident_count) AS total_accidents FROM public.accidents_by_state_year;'
+```
+
+Ожидается **7 728 394**. Для остальных двух таблиц с агрегатами сумма `accident_count` за все годы также должна совпадать. В представлении `accidents_hourly_comparison` для каждой группы `is_weekend` сумма `hour_share_pct` должна составлять примерно 100 % (с учётом округления).
+
+### 7.4. Как обновить SQL-экспорт после изменения аналитики
+
+```bash
+mkdir -p exports
 docker compose exec -T postgres \
   pg_dump -U postgres -d analytics \
-  -Fc --no-owner --no-acl \
-  > backups/analytics.dump
+  --schema=public --no-owner --no-privileges \
+  > exports/analytics.sql
 ```
 
-Файл `backups/analytics.dump` содержит структуру и данные таблиц базы `analytics`.
-
-### 8.2. Проверка резервной копии
+Экспорт можно проверить командой:
 
 ```bash
-docker compose exec -T postgres \
-  pg_restore --list < backups/analytics.dump
+grep -E '^CREATE (TABLE|VIEW) public\.' exports/analytics.sql
 ```
 
-Команда выводит содержимое архива без восстановления базы.
+## 8. Визуализация в Apache Superset
 
-### 8.3. Восстановление базы
+1. Перейдите на <http://localhost:8088> и войдите под администратором.
+2. Убедитесь, что таблицы PostgreSQL восстановлены (раздел 7).
+3. Импортируйте `exports/superset_dashboard_safe.zip` через функцию **Import dashboards** в разделе **Dashboards** (положение команды зависит от версии Superset).
+4. При импорте/настройке подключения **US Accidents Analytics** укажите PostgreSQL `postgres:5432`, базу `analytics`, пользователя `postgres` и пароль `POSTGRES_PASSWORD` из `.env`. В безопасном ZIP пароль в SQLAlchemy URI отсутствует и должен вводиться отдельно.
+5. Откройте дашборд **«US Accidents — Аналитический дашборд»**, убедитесь в наличии 8 визуализаций и фильтра **«Год»**.
 
-Получите файл `analytics.dump` от участника, создавшего резервную копию, и поместите его в папку `backups/`.
+Состав дашборда:
 
-Восстановление выполняется в новую, пустую базу `analytics`, созданную при первом запуске PostgreSQL:
+| Элемент | Данные | Фильтр «Год» |
+|---|---|---|
+| Общее количество ДТП (KPI) | `accidents_by_state_year` | Да |
+| Топ-10 штатов | `accidents_by_state_year` | Да |
+| Доля Severity 3–4 по погоде | `accidents_by_weather_year` | Да |
+| ДТП днём и ночью | `accidents_by_time` | Да |
+| ДТП по часам суток | `accidents_by_time` | Да |
+| Будни и выходные по часам | `accidents_hourly_comparison` | Нет, доли за весь период |
+| Метрики Random Forest | `ml_metrics` | Нет, метрики за общий тестовый набор |
+| Результаты гипотез | `hypothesis_results` | Нет, результаты за весь период |
+
+**Проверка:** при снятом фильтре KPI = **7 728 394**; при выборе 2022 года KPI = **1 762 452**. Графики ML, гипотез и сравнения будней/выходных не должны изменяться от фильтра года. Проценты по погоде показывают долю тяжёлых ДТП *внутри соответствующего погодного условия*, а не долю этой погоды среди всех ДТП. Доля дневных/ночных ДТП рассчитывается только для записей с известным значением Day/Night.
+
+Для отчёта сохраните общий скриншот дашборда без фильтра и отдельный скриншот с выбранным годом. Экспорт Superset содержит настройки дашборда, **но не данные PostgreSQL**.
+
+## 9. Совместная работа и Git
+
+В репозиторий передаются код, Docker Compose, README и проверенные конфигурации. `exports/analytics.sql` и проверенная копия экспорта Superset могут передаваться через Git только после проверки на секреты и соответствия `.gitignore`.
+
+Не публикуйте `.env`, оригинальные ZIP-файлы с паролями, локальный CSV, очищенные Parquet и данные Docker volumes. Проверяйте изменения перед коммитом (`git status`, `git diff --cached`). Для работы команды используйте отдельные ветки `feature/...` и Pull Request.
+
+### Управление контейнерами
 
 ```bash
-docker compose exec -T postgres \
-  pg_restore -U postgres \
-  -d analytics \
-  --no-owner --no-acl --exit-on-error \
-  < backups/analytics.dump
+docker compose down      # Остановка без удаления volumes
+docker compose up -d     # Повторный запуск
+docker compose ps        # Состояние сервисов
 ```
 
-Важно: эта команда предназначена для пустой базы. Если в `analytics` уже имеются таблицы, восстановление может привести к конфликтам. Перед заменой существующих данных необходимо отдельно создать резервную копию.
-
-### 8.4. Проверка восстановленных таблиц
-
-```bash
-docker compose exec postgres \
-  psql -U postgres -d analytics \
-  -c "\dt"
-```
-
-Команда отображает таблицы базы `analytics`.
-
-## 9. Работа с Apache Superset
-
-Откройте http://localhost:8088 и войдите под пользователем `admin`.
-
-Если подключение `US Accidents Analytics` ещё не создано, добавьте базу PostgreSQL через интерфейс управления подключениями Superset.
-
-Параметры:
-
-- Host: `postgres`
-- Port: `5432`
-- Database: `analytics`
-- Username: `postgres`
-- Password: значение `POSTGRES_PASSWORD` из `.env`
-
-В SQL Lab выберите подключение к `analytics` и выполните проверочный запрос:
-
-```sql
-SELECT 1 AS connection_ok;
-```
-
-Ожидаемый результат: `1`.
-
-После загрузки аналитических таблиц их можно использовать для создания датасетов, графиков и дашбордов.
-
-## 10. Совместная работа
-
-В Git хранятся код проекта, Docker Compose, конфигурационные файлы и инструкции.
-
-Исходный CSV и данные Docker volumes автоматически не передаются через Git.
-
-Для обмена обработанными данными используется файл `analytics.dump`. Способ его передачи определяется командой с учётом размера файла.
-
-Не добавляйте в Git настоящий `.env`, пароли и другие секретные данные.
+**Не выполняйте `docker compose down -v` без полного понимания последствий:** эта команда удаляет тома и может уничтожить данные HDFS и PostgreSQL.
