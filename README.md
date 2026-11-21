@@ -161,21 +161,88 @@ docker compose exec spark-master \
 
 Ожидаются **7 728 394 строк и 46 исходных столбцов**.
 
-### 5.2. Исследование и подготовка Parquet
+### 5.2. Получение готового Parquet или обработка с нуля
 
 - Исследовательский ноутбук: `scripts/exploration/data_exploration.ipynb`.
 - Скрипт предварительной обработки: `scripts/preprocessing/clean_accidents.py`.
-- Итоговые очищенные данные: `hdfs://namenode:8020/data/curated/accidents/`.
+- Итоговый каталог: `hdfs://namenode:8020/data/curated/accidents/`.
 
-Ноутбук содержит чтение исходного CSV из HDFS и запись очищенного датасета в Parquet с партиционированием по году. **На уже подготовленном окружении** обработанный датасет содержит **7 728 394 строки и 51 столбец**. Если каталог в HDFS отсутствует, необходимо сначала выполнить этап подготовки данных в рабочей среде PySpark с доступом к HDFS. Сам факт наличия ноутбука в Git не создаёт Parquet автоматически; команды универсального запуска ноутбука в текущем Compose нет.
+Подготовленный командой набор содержит **7 728 394 строки и 51 столбец**. Данные сохранены в формате Parquet с разбиением по годам (`year=...`).
 
-Проверка наличия Parquet:
+**Parquet не хранится в GitHub.** Папку с готовыми файлами можно скачать по ссылке: https://drive.google.com/drive/folders/1btWE2M_klagyz7255X3gNLtkHZA8F4dt?usp=sharing
 
-```bash
-docker compose exec namenode hdfs dfs -ls /data/curated/accidents
+#### Вариант А. Загрузка готового Parquet (рекомендуется)
+
+Этот вариант позволяет использовать уже обработанные данные без повторного запуска очистки исходного CSV.
+
+**1. Получите готовую папку `accidents`.**
+
+Скачайте папку целиком, включая каталоги `year=...` и файлы `.parquet`. Разместите её в корне проекта:
+
+```text
+us-accidents-bigdata/
+└── data/
+    └── accidents/
+        ├── year=2016/
+        ├── year=2017/
+        └── ...
 ```
 
-Затем проверка схемы и объёма в Spark:
+Если данные переданы в ZIP-архиве, предварительно распакуйте его, сохранив структуру каталогов.
+
+**2. Проверьте наличие папки на компьютере.**
+
+```bash
+ls data/accidents
+```
+
+**3. Скопируйте папку в контейнер NameNode.**
+
+```bash
+docker compose cp data/accidents namenode:/tmp/
+```
+
+**4. Загрузите Parquet в HDFS.**
+
+```bash
+docker compose exec namenode \
+  hdfs dfs -mkdir -p /data/curated
+```
+
+```bash
+docker compose exec namenode \
+  hdfs dfs -put /tmp/accidents /data/curated/
+```
+
+В результате данные будут доступны по пути:
+
+```text
+hdfs://namenode:8020/data/curated/accidents/
+```
+
+**Важно:** загрузку выполняйте только в том случае, если каталог `/data/curated/accidents/` ещё не существует. Не удаляйте и не перезаписывайте существующие данные без согласования с командой.
+
+#### Вариант Б. Обработка исходного CSV с нуля
+
+Если готовые Parquet-файлы недоступны, можно самостоятельно выполнить обработку исходного датасета.
+
+1. Скачайте `US_Accidents_March23.csv` и загрузите его в HDFS согласно разделу 4.
+2. Откройте `scripts/exploration/data_exploration.ipynb` в среде Jupyter/PySpark с доступом к Spark и HDFS.
+3. Выполните этапы очистки и преобразования данных.
+4. Сохраните результат в формате Parquet по пути `/data/curated/accidents/`.
+
+В текущей конфигурации Docker Compose автоматический запуск этого ноутбука отдельной командой не предусмотрен. Скрипт `clean_accidents.py` не следует считать полной заменой ноутбука без проверки его функциональности.
+
+#### Проверка подготовленных данных
+
+Независимо от выбранного варианта проверьте наличие файлов в HDFS:
+
+```bash
+docker compose exec namenode \
+  hdfs dfs -ls /data/curated/accidents
+```
+
+Затем запустите проверочный PySpark-скрипт:
 
 ```bash
 docker compose exec spark-master \
@@ -189,7 +256,13 @@ docker compose exec spark-master \
   /opt/spark/work/validation/check_curated.py
 ```
 
-Ожидается 7 728 394 записи, 51 столбец и наличие необходимых аналитических признаков (`year`, `hour`, `State`, `Weather_Condition`, `Severity`, `is_weekend`, `Sunrise_Sunset`).
+**Ожидаемый результат:**
+
+- Количество записей — **7 728 394**.
+- Количество столбцов — **51**.
+- Присутствуют признаки `year`, `hour`, `State`, `Weather_Condition`, `Severity`, `is_weekend`, `Sunrise_Sunset`.
+
+**Примечание:** если необходимо только просмотреть готовый дашборд Superset, загружать Parquet в HDFS не требуется. Достаточно восстановить аналитическую базу из `exports/analytics.sql` и импортировать `exports/superset_dashboard_safe.zip`.
 
 ## 6. Обработка данных, ML и гипотезы
 
